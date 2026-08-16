@@ -8,7 +8,7 @@
 
 FROM golang:1.25-alpine AS singbox-builder
 
-ARG SING_BOX_VERSION=1.13.12
+ARG SING_BOX_VERSION=1.13.18
 # Tag parity with dawsh/marznode's sing-box 1.11.3 build, minus tags that
 # became implicit in 1.13.x (with_reality_server → with_utls, with_ech →
 # stdlib). `with_musl` mirrors the official alpine-based release.
