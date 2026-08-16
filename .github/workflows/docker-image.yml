@@ -5,6 +5,33 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      build-target:
+        description: 'Build Target (Release Type)'
+        type: choice
+        required: true
+        options:
+          - nightly
+        default: "nightly"
+      git-ref:
+        description: "Release Git Ref (Which branch or tag to build?)"
+        required: true
+        default: "master"
+
+      is-draft:
+        description: 'Draft Release? (Beta only, Nightly will always be a non-draft)'
+        type: boolean
+        required: true
+        default: true
+      is-pre-release:
+        description: 'Pre Release? (labeled as "PreRelease")'
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write   # nightly-release needs write to create releases
+  packages: write
 
 jobs:
   build-docker-image:
@@ -12,6 +39,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.git-ref }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -19,18 +49,44 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Docker Hub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ vars.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        if: ${{ github.event_name == 'push' }}
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            dawsh/marznode:latest
-            dawsh/marznode:${{github.ref_name}}
+            ghcr.io/sinasadeghi83/marznode:latest
+            ghcr.io/sinasadeghi83/marznode:${{ github.ref_name }}
+
+      - name: Nightly build and push for docker
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.build-target == 'nightly'}}
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/sinasadeghi83/marznode:nightly
+
+      - name: Update Nightly Release
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.build-target == 'nightly'}}
+        uses: andelf/nightly-release@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: nightly
+          name: 'Marznode nightly release $$'
+          prerelease: true
+          draft: false
+          body: |
+            This is a nightly release of Marznode.
+            It's unstable compared to the official releases, **use it with caution**!
