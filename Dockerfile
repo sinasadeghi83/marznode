@@ -8,7 +8,7 @@
 
 FROM golang:1.25-alpine AS singbox-builder
 
-ARG SING_BOX_VERSION=v1.13.12
+ARG SING_BOX_VERSION=1.13.12
 # Tag parity with dawsh/marznode's sing-box 1.11.3 build, minus tags that
 # became implicit in 1.13.x (with_reality_server → with_utls, with_ech →
 # stdlib). `with_musl` mirrors the official alpine-based release.
@@ -16,7 +16,7 @@ ARG SING_BOX_TAGS="with_gvisor,with_quic,with_grpc,with_dhcp,with_wireguard,with
 
 RUN apk add --no-cache git
 
-RUN git clone --depth 1 --branch "${SING_BOX_VERSION}" \
+RUN git clone --depth 1 --branch "v${SING_BOX_VERSION}" \
         https://github.com/SagerNet/sing-box.git /src
 WORKDIR /src
 
@@ -55,6 +55,7 @@ COPY . .
 
 RUN mkdir /etc/init.d/
 
+## Installing xray
 RUN apk add --no-cache curl unzip
 
 RUN curl -L -H "Cache-Control: no-cache" -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip && \
@@ -66,6 +67,8 @@ RUN mkdir -p /usr/local/lib/xray && \
     curl -L -o /usr/local/lib/xray/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat && \
     curl -L -o /usr/local/lib/xray/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
 
+# cleaning
 RUN apk add --no-cache alpine-sdk libffi-dev && pip install --no-cache-dir -r /app/requirements.txt && apk del -r alpine-sdk libffi-dev curl unzip
 
+#Run node
 CMD ["python3", "marznode.py"]
