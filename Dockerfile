@@ -13,16 +13,31 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS singbox-builder
 # TARGETARCH (amd64/arm64); mapped explicitly to GOARCH below.
 ARG TARGETARCH
 
-ARG SING_BOX_VERSION=1.13.18
+# Set to `latest` to track the newest stable sing-box release
+# (resolved at build time via the GitHub releases/latest redirect),
+# or pin to e.g. `1.13.18` for reproducible builds.
+ARG SING_BOX_VERSION=latest
 # Tag parity with dawsh/marznode's sing-box 1.11.3 build, minus tags that
 # became implicit in 1.13.x (with_reality_server → with_utls, with_ech →
 # stdlib). `with_musl` mirrors the official alpine-based release.
 ARG SING_BOX_TAGS="with_gvisor,with_quic,with_grpc,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,with_v2ray_api,with_musl,badlinkname,tfogo_checklinkname0"
 
-RUN apk add --no-cache git
+RUN apk add --no-cache git curl ca-certificates
 
-RUN git clone --depth 1 --branch "v${SING_BOX_VERSION}" \
-        https://github.com/SagerNet/sing-box.git /src
+# Resolve `latest` to the newest stable tag via the releases/latest redirect
+# (no GitHub API token / rate-limit issues), then shallow-clone that tag.
+# A pinned SING_BOX_VERSION (e.g. `1.13.18`) skips resolution. The resolved
+# numeric version is saved for the ldflags Version stamp below.
+RUN if [ -z "${SING_BOX_VERSION}" ] || [ "${SING_BOX_VERSION}" = "latest" ]; then \
+        RESOLVED_TAG="$(curl -fsSIL -o /dev/null -w "%{url_effective}" https://github.com/SagerNet/sing-box/releases/latest | grep -o "[^/]*$")"; \
+        echo "sing-box latest release: ${RESOLVED_TAG}"; \
+    else \
+        case "${SING_BOX_VERSION}" in v*) RESOLVED_TAG="${SING_BOX_VERSION}" ;; *) RESOLVED_TAG="v${SING_BOX_VERSION}" ;; esac; \
+        echo "sing-box pinned release: ${RESOLVED_TAG}"; \
+    fi && \
+    echo "${RESOLVED_TAG}" > /tmp/sing-box-tag && \
+    echo "${RESOLVED_TAG#v}" > /tmp/sing-box-version && \
+    git clone --depth 1 --branch "${RESOLVED_TAG}" https://github.com/SagerNet/sing-box.git /src
 WORKDIR /src
 
 # -checklinkname=0 / -X internal/godebug.defaultGODEBUG=multipathtcp=0
@@ -31,8 +46,10 @@ WORKDIR /src
 # reference to handlePostHandshakeMessage"). GOTOOLCHAIN=local pins us to
 # the image's Go (go.mod may request a newer patch version).
 RUN --mount=type=cache,target=/root/.cache/go-build \
+    SING_BOX_STAMP="$(cat /tmp/sing-box-version)" && \
+    echo "building sing-box ${SING_BOX_STAMP} for ${TARGETARCH}" && \
     GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath \
-        -ldflags "-s -w -buildid= -checklinkname=0 -X internal/godebug.defaultGODEBUG=multipathtcp=0 -X github.com/sagernet/sing-box/constant.Version=${SING_BOX_VERSION}" \
+        -ldflags "-s -w -buildid= -checklinkname=0 -X internal/godebug.defaultGODEBUG=multipathtcp=0 -X github.com/sagernet/sing-box/constant.Version=${SING_BOX_STAMP}" \
         -tags "${SING_BOX_TAGS}" \
         -o /out/sing-box \
         ./cmd/sing-box
