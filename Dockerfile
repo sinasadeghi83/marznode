@@ -6,7 +6,12 @@
 # user-traffic stats (FetchUsersStats) and the latter for v2ray grpc
 # transports.
 
-FROM golang:1.25-alpine AS singbox-builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS singbox-builder
+
+# Faster cross-compile pattern: this stage always runs natively on
+# BUILDPLATFORM (no QEMU emulation for the Go toolchain). BuildKit injects
+# TARGETARCH (amd64/arm64); mapped explicitly to GOARCH below.
+ARG TARGETARCH
 
 ARG SING_BOX_VERSION=1.13.18
 # Tag parity with dawsh/marznode's sing-box 1.11.3 build, minus tags that
@@ -25,24 +30,36 @@ WORKDIR /src
 # rejects sing-box's linkname hooks into crypto/tls internals ("invalid
 # reference to handlePostHandshakeMessage"). GOTOOLCHAIN=local pins us to
 # the image's Go (go.mod may request a newer patch version).
-RUN GOTOOLCHAIN=local CGO_ENABLED=0 go build -trimpath \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    GOTOOLCHAIN=local CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath \
         -ldflags "-s -w -buildid= -checklinkname=0 -X internal/godebug.defaultGODEBUG=multipathtcp=0 -X github.com/sagernet/sing-box/constant.Version=${SING_BOX_VERSION}" \
         -tags "${SING_BOX_TAGS}" \
         -o /out/sing-box \
         ./cmd/sing-box
 
-# Sanity-check that the produced binary has all the tags we asked for.
- RUN version_output="$("/out/sing-box" version)" \
-         && printf '%s\n' "${version_output}" \
-         && for tag in $(printf '%s' "${SING_BOX_TAGS}" | tr ',' ' '); do \
-              printf '%s\n' "${version_output}" | grep -F -q -- "${tag}" \
+# Tag check runs the binary when possible (works in CI via QEMU binfmt from
+# setup-qemu-action, even though this stage runs on BUILDPLATFORM). Falls
+# back to `go version -m` arch verification for local builds without QEMU,
+# where foreign-arch exec fails with "exec format error".
+RUN if version_output="$(/out/sing-box version 2>&1)"; then \
+        printf '%s\n' "${version_output}"; \
+        for tag in $(printf '%s' "${SING_BOX_TAGS}" | tr ',' ' '); do \
+            printf '%s\n' "${version_output}" | grep -F -q -- "${tag}" \
                 || { echo "missing build tag in /out/sing-box: ${tag}" >&2; exit 1; }; \
-            done
+        done; \
+    else \
+        echo "exec check unavailable (foreign arch without QEMU binfmt?), verifying GOARCH via go version -m" >&2; \
+        go version -m /out/sing-box; \
+        go version -m /out/sing-box | grep -q "GOARCH=${TARGETARCH}" \
+            || { echo "GOARCH mismatch: expected ${TARGETARCH}" >&2; exit 1; }; \
+    fi
 
 
 FROM tobyxdd/hysteria:v2 AS hysteria-image
 
 FROM python:3.12-alpine
+
+ARG TARGETARCH
 
 ENV PYTHONUNBUFFERED=1
 
@@ -58,9 +75,17 @@ RUN mkdir /etc/init.d/
 ## Installing xray
 RUN apk add --no-cache curl unzip
 
-RUN curl -L -H "Cache-Control: no-cache" -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip && \
+# TARGETARCH (amd64/arm64) -> Xray asset suffix: 64 | arm64-v8a (per
+# https://github.com/XTLS/Xray-core/releases, e.g. v26.10.21 provides
+# Xray-linux-64.zip and Xray-linux-arm64-v8a.zip). Keeps `latest` behavior.
+RUN case "${TARGETARCH}" in \
+        amd64) XRAY_ARCH="64" ;; \
+        arm64) XRAY_ARCH="arm64-v8a" ;; \
+        *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    curl -L -H "Cache-Control: no-cache" -o xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${XRAY_ARCH}.zip" && \
     unzip xray.zip -d /usr/local/bin/ && \
-    rm -f xray.zi
+    rm -f xray.zip
 
 # Download the GeoIP and GeoSite routing databases
 RUN mkdir -p /usr/local/lib/xray && \
